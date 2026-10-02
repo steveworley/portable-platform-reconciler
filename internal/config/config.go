@@ -32,6 +32,41 @@ type Config struct {
 	ECS            ECSConfig            `json:"ecs" mapstructure:"ecs"`
 	EventBridge    EventBridgeConfig    `json:"eventbridge" mapstructure:"eventbridge"`
 	Status         StatusConfig         `json:"status" mapstructure:"status"`
+	Alerting       AlertingConfig       `json:"alerting" mapstructure:"alerting"`
+}
+
+// New Relic regions for NewRelicConfig.Region.
+const (
+	RegionUS = "US"
+	RegionEU = "EU"
+)
+
+// AlertingConfig configures alert management. Switching Backend is how the
+// platform team migrates alert engines without touching any policy.
+type AlertingConfig struct {
+	// Enabled turns the alerts reconcile step on. Default true.
+	Enabled bool `json:"enabled" mapstructure:"enabled"`
+	// Backend is the name of a registered alert backend (e.g. "newrelic",
+	// "memory"). Default "newrelic", which runs in dry-run mode unless
+	// newrelic.dryRun is false, so the default never touches the network.
+	// Whether the name is registered is checked at construction, not here.
+	Backend  string         `json:"backend" mapstructure:"backend"`
+	NewRelic NewRelicConfig `json:"newrelic" mapstructure:"newrelic"`
+}
+
+// NewRelicConfig configures the New Relic alert backend. The API key is never
+// stored here; it is read from the environment variable named by APIKeyEnv.
+// Constraints for dryRun=false (account, policy, key present) are enforced
+// when the backend is constructed.
+type NewRelicConfig struct {
+	AccountID int64 `json:"accountId" mapstructure:"accountId"`
+	// PolicyID is the shared New Relic alert policy all conditions are created in.
+	PolicyID int64 `json:"policyId" mapstructure:"policyId"`
+	// Region is US or EU.
+	Region    string `json:"region" mapstructure:"region"`
+	APIKeyEnv string `json:"apiKeyEnv" mapstructure:"apiKeyEnv"`
+	// DryRun logs the NerdGraph requests instead of sending them. Default true.
+	DryRun bool `json:"dryRun" mapstructure:"dryRun"`
 }
 
 // RuntimeConfig selects the runtime adapter.
@@ -85,6 +120,15 @@ func Default() Config {
 		Policies:       PoliciesConfig{Dir: "./examples"},
 		ECS:            ECSConfig{Mode: ECSModeSimulated},
 		EventBridge:    EventBridgeConfig{ListenAddr: ":8080"},
+		Alerting: AlertingConfig{
+			Enabled: true,
+			Backend: "newrelic",
+			NewRelic: NewRelicConfig{
+				Region:    RegionUS,
+				APIKeyEnv: "NEW_RELIC_API_KEY",
+				DryRun:    true,
+			},
+		},
 	}
 }
 
@@ -113,6 +157,8 @@ func Parse(data []byte, getenv func(string) string) (Config, error) {
 		cfg.Runtime.Type = v
 	}
 	cfg.Runtime.Type = strings.ToLower(cfg.Runtime.Type)
+	cfg.Alerting.Backend = strings.ToLower(cfg.Alerting.Backend)
+	cfg.Alerting.NewRelic.Region = strings.ToUpper(cfg.Alerting.NewRelic.Region)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -155,6 +201,21 @@ func (c Config) Validate() error {
 	case ECSModeSimulated, ECSModeAWS:
 	default:
 		errs = append(errs, fmt.Errorf("ecs.mode %q must be simulated or aws", c.ECS.Mode))
+	}
+	if c.Alerting.Enabled {
+		if c.Alerting.Backend == "" {
+			errs = append(errs, errors.New("alerting.backend is required when alerting is enabled"))
+		}
+		nr := c.Alerting.NewRelic
+		if nr.Region != RegionUS && nr.Region != RegionEU {
+			errs = append(errs, fmt.Errorf("alerting.newrelic.region %q must be US or EU", nr.Region))
+		}
+		if nr.AccountID < 0 || nr.PolicyID < 0 {
+			errs = append(errs, errors.New("alerting.newrelic.accountId and policyId must not be negative"))
+		}
+		if nr.APIKeyEnv == "" {
+			errs = append(errs, errors.New("alerting.newrelic.apiKeyEnv is required (name of the env var holding the key)"))
+		}
 	}
 	return errors.Join(errs...)
 }

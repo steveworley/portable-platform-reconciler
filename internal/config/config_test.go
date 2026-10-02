@@ -40,6 +40,21 @@ func TestParse(t *testing.T) {
 		{name: "bad duration", yaml: "reconciliation: {resyncInterval: soon}\n", wantErr: "resyncInterval"},
 		{name: "zero workers", yaml: "reconciliation: {workers: 0}\n", wantErr: "workers"},
 		{name: "bad ecs mode", yaml: "ecs: {mode: fargate}\n", wantErr: "ecs.mode"},
+		{name: "alerting defaults", yaml: "", check: func(c Config) bool {
+			a := c.Alerting
+			return a.Enabled && a.Backend == "newrelic" && a.NewRelic.DryRun && a.NewRelic.Region == "US" && a.NewRelic.APIKeyEnv == "NEW_RELIC_API_KEY"
+		}},
+		{name: "alerting override", yaml: "alerting: {backend: Memory, newrelic: {accountId: 7, policyId: 9, region: eu, dryRun: false}}\n",
+			check: func(c Config) bool {
+				a := c.Alerting
+				return a.Enabled && a.Backend == "memory" && a.NewRelic.AccountID == 7 && a.NewRelic.PolicyID == 9 &&
+					a.NewRelic.Region == "EU" && !a.NewRelic.DryRun && a.NewRelic.APIKeyEnv == "NEW_RELIC_API_KEY"
+			}},
+		{name: "alerting disabled skips checks", yaml: "alerting: {enabled: false, backend: \"\"}\n", check: func(c Config) bool { return !c.Alerting.Enabled }},
+		{name: "alerting empty backend", yaml: "alerting: {backend: \"\"}\n", wantErr: "alerting.backend"},
+		{name: "alerting bad region", yaml: "alerting: {newrelic: {region: AP}}\n", wantErr: "alerting.newrelic.region"},
+		{name: "alerting empty key env", yaml: "alerting: {newrelic: {apiKeyEnv: \"\"}}\n", wantErr: "apiKeyEnv"},
+		{name: "alerting negative id", yaml: "alerting: {newrelic: {accountId: -1}}\n", wantErr: "must not be negative"},
 		{name: "unknown key", yaml: "bogus: 1\n", wantErr: "decode config"},
 	}
 	for _, tt := range tests {
