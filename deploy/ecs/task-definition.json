@@ -1,0 +1,45 @@
+{
+  "_comment": "EXAMPLE ONLY, not applied by anything in this repository. Replace every ARN, account ID, region and image. Keys starting with underscore are not valid ECS fields: remove them before registering.",
+  "family": "platform-reconciler",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/platform-reconciler-execution",
+  "taskRoleArn": "arn:aws:iam::123456789012:role/platform-reconciler-task",
+  "_iamNotes": [
+    "Execution role: AmazonECSTaskExecutionRolePolicy plus secretsmanager:GetSecretValue on the New Relic API key secret.",
+    "Task role (read-only POC): ecs:DescribeServices, ecs:DescribeTaskDefinition on the clusters and services in scope.",
+    "Remediation is simulated/log-only in the POC, so no ecs:RegisterTaskDefinition or ecs:UpdateService is needed."
+  ],
+  "containerDefinitions": [
+    {
+      "name": "controller",
+      "image": "123456789012.dkr.ecr.ap-southeast-2.amazonaws.com/portable-platform-reconciler:dev",
+      "essential": true,
+      "command": ["--config", "/config/config.yaml"],
+      "portMappings": [
+        {"containerPort": 8080, "protocol": "tcp"},
+        {"containerPort": 8081, "protocol": "tcp"}
+      ],
+      "environment": [
+        {"name": "RECONCILER_RUNTIME", "value": "ecs"}
+      ],
+      "secrets": [
+        {
+          "name": "NEW_RELIC_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:newrelic/api-key"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/platform-reconciler",
+          "awslogs-region": "ap-southeast-2",
+          "awslogs-stream-prefix": "controller"
+        }
+      }
+    }
+  ],
+  "_configNotes": "The image reads --config from a path. Bake a config with ecs.mode: aws and policies.dir into the image or mount it (e.g. EFS); EventBridge delivers events to port 8080 /events through an API destination or a proxy you provide."
+}

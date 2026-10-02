@@ -1,0 +1,27 @@
+# ECS runtime against the built-in simulation: no AWS account needed.
+# Alerts go to the New Relic backend in dry-run mode (no network).
+#
+#   go run ./cmd/controller --config examples/config/ecs-simulated.yaml --log-format text
+#   curl -XPOST localhost:8080/events -d '{"source":"aws.ecs","detail-type":"ECS Deployment State Change","detail":{"serviceArn":"arn:aws:ecs:ap-southeast-2:123456789012:service/production/payments-api"}}'
+#   curl localhost:8081/status
+runtime:
+  type: ecs
+reconciliation:
+  resyncInterval: 30s
+  workers: 2
+  maxRetries: 5
+policies:
+  dir: ./examples/ecs
+ecs:
+  mode: simulated        # "aws" reads real ECS (read-only; remediation is only logged)
+eventbridge:
+  listenAddr: ":8080"
+status:
+  listenAddr: ":8081"
+alerting:
+  enabled: true
+  backend: newrelic
+  newrelic:
+    dryRun: true         # logs the NerdGraph requests, sends nothing
+    region: US
+    apiKeyEnv: NEW_RELIC_API_KEY

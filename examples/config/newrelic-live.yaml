@@ -1,0 +1,25 @@
+# WARNING: dryRun is false. This config creates, updates and DELETES real
+# New Relic NRQL alert conditions in the alert policy named by policyId.
+# Only conditions carrying this controller's ownership marker are touched.
+# Try it against a non-production account first. The NRQL attribute names are
+# a POC best guess and must be validated against your account's data.
+#
+# The API key is read from the environment variable named by apiKeyEnv:
+#   export NEW_RELIC_API_KEY=NRAK-...
+runtime:
+  type: ecs
+reconciliation:
+  resyncInterval: 5m
+policies:
+  dir: ./examples/ecs
+ecs:
+  mode: simulated
+alerting:
+  enabled: true
+  backend: newrelic
+  newrelic:
+    dryRun: false
+    accountId: 1234567     # placeholder: your New Relic account ID
+    policyId: 7654321      # placeholder: existing alert policy to hold the conditions
+    region: US             # US or EU
+    apiKeyEnv: NEW_RELIC_API_KEY

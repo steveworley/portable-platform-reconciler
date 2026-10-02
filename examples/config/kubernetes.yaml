@@ -1,0 +1,22 @@
+# Kubernetes runtime. Uses in-cluster config, else $KUBECONFIG / ~/.kube/config
+# (or kubernetes.kubeconfig below).
+#
+#   go run ./cmd/controller --config examples/config/kubernetes.yaml --log-format text
+runtime:
+  type: kubernetes
+reconciliation:
+  resyncInterval: 5m
+  workers: 2
+  maxRetries: 5
+policies:
+  dir: ./examples/kubernetes
+kubernetes:
+  # kubeconfig: /path/to/kubeconfig
+  applyAnnotations: true   # false = report drift only (dry-run)
+status:
+  listenAddr: ":8081"
+alerting:
+  enabled: true
+  backend: newrelic
+  newrelic:
+    dryRun: true

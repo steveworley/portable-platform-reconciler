@@ -1,0 +1,118 @@
+# EXAMPLE ONLY. Review before applying; nothing in this repository applies it.
+# Image name is a placeholder: build with `make docker-build` and push it
+# to your own registry.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-reconciler
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: platform-reconciler
+  namespace: platform-reconciler
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-reconciler
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: platform-reconciler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: platform-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: platform-reconciler
+    namespace: platform-reconciler
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-reconciler
+  namespace: platform-reconciler
+data:
+  config.yaml: |
+    runtime:
+      type: kubernetes
+    reconciliation:
+      resyncInterval: 5m
+    policies:
+      dir: /etc/reconciler/policies
+    kubernetes:
+      applyAnnotations: true
+    status:
+      listenAddr: ":8081"
+    alerting:
+      enabled: true
+      backend: newrelic
+      newrelic:
+        dryRun: true     # set false (plus accountId, policyId and the API key secret) to go live
+  payments-api.yaml: |
+    apiVersion: observability.platform.example/v1alpha1
+    kind: ObservabilityPolicy
+    metadata:
+      name: payments-api
+    target:
+      runtime: kubernetes
+      namespace: payments
+      kind: Deployment
+      name: payments-api
+    spec:
+      profile: standard
+      telemetry:
+        logs: {enabled: true}
+        metrics: {enabled: true}
+        traces: {enabled: true}
+      alerts:
+        profile: standard
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-reconciler
+  namespace: platform-reconciler
+spec:
+  replicas: 1   # no leader election in the POC: keep exactly one replica
+  selector:
+    matchLabels:
+      app: platform-reconciler
+  template:
+    metadata:
+      labels:
+        app: platform-reconciler
+    spec:
+      serviceAccountName: platform-reconciler
+      containers:
+        - name: controller
+          image: portable-platform-reconciler:dev   # placeholder
+          args: ["--config", "/etc/reconciler/config.yaml"]
+          ports:
+            - containerPort: 8081
+              name: status
+          readinessProbe:
+            httpGet: {path: /healthz, port: status}
+          livenessProbe:
+            httpGet: {path: /healthz, port: status}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - {name: config, mountPath: /etc/reconciler/config.yaml, subPath: config.yaml}
+            - {name: config, mountPath: /etc/reconciler/policies/payments-api.yaml, subPath: payments-api.yaml}
+      volumes:
+        - name: config
+          configMap:
+            name: platform-reconciler
