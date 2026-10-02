@@ -318,11 +318,23 @@ The controller has one `alerting.backend` per instance. To run A and B in parall
 
 Switching the backend does not touch A. Its rules stay until pruned. `alerting.Prune(ctx, backendA, keep, dryRun)` is the function that does it. A needs to implement `alerting.Lister`; otherwise it returns `ErrPruneUnsupported`.
 
-1. Run with `dryRun = true` and `keep = nil` (keep nothing, which empties A of rules the controller created). Review `PruneReport.Pruned`. Only rules tagged `managed-by=portable-reconciler` appear; unmanaged rules in A are never listed.
-2. Run again with `dryRun = false`. Deletion continues past individual failures; the returned error joins them and `Pruned` lists only the successes. Re-run until the report is empty.
+Use the `prune` subcommand of the controller binary (it wraps `alerting.Prune` in `internal/alerting/prune.go`). `--dry-run` defaults to `true`.
+
+1. Dry run, keeping nothing (empties A of rules the controller created). Review the report; only rules tagged `managed-by=portable-reconciler` appear, unmanaged rules in A are never listed.
+
+   ```sh
+   controller prune --config cfg-backend-a.yaml --backend <A> --keep-none
+   ```
+
+2. Run for real. Deletion continues past individual failures; the returned error joins them and the report lists only the successes. Re-run until the report is empty.
+
+   ```sh
+   controller prune --config cfg-backend-a.yaml --backend <A> --keep-none --dry-run=false
+   ```
+
 3. After a successful prune, decommission A's credentials and configuration from the controller.
 
-Pruning is a library function (`internal/alerting/prune.go`). Expose it through whatever operational entry point `cmd/` provides, or a one-off program that builds A with `alerting.New(name, cfg, logger)` and calls `Prune`. It is not triggered automatically by the controller.
+The same command with `--orphans` (instead of `--keep-none`) keeps rules whose owning policy still exists in `policies.dir` and deletes the rest; use it as the sweep for policies deleted while the controller was down. Pruning is never triggered automatically.
 
 ### Rollback
 
