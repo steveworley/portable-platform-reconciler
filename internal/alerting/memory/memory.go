@@ -44,7 +44,10 @@ type Backend struct {
 	writes Writes
 }
 
-var _ alerting.Backend = (*Backend)(nil)
+var (
+	_ alerting.Backend = (*Backend)(nil)
+	_ alerting.Lister  = (*Backend)(nil)
+)
 
 // Option customises a Backend.
 type Option func(*Backend)
@@ -77,6 +80,11 @@ func (b *Backend) List(_ context.Context, owner alerting.Owner) ([]alerting.Mana
 	}
 	sortRules(out)
 	return out, nil
+}
+
+// ListAll implements alerting.Lister. Every stored rule is managed.
+func (b *Backend) ListAll(context.Context) ([]alerting.ManagedRule, error) {
+	return b.Rules(), nil
 }
 
 // Create implements alerting.Backend. Creating an existing rule is an error.

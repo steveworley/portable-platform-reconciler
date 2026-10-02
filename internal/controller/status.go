@@ -28,6 +28,7 @@ const (
 	ConditionCapabilitiesSatisfied  ConditionType = "CapabilitiesSatisfied"
 	ConditionConfigurationCompliant ConditionType = "ConfigurationCompliant"
 	ConditionReconciled             ConditionType = "Reconciled"
+	ConditionFinalized              ConditionType = "Finalized"
 )
 
 // ConditionStatus is "True", "False" or "Unknown".

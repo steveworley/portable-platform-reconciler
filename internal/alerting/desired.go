@@ -29,7 +29,7 @@ func (p *Profiles) Desired(pol policy.ObservabilityPolicy, id state.WorkloadIden
 	}
 	owner := OwnerFor(pol.Metadata.Name, id)
 	for _, t := range prof.Rules {
-		if t.RequiresCapability != "" && !supports(caps, t.RequiresCapability) {
+		if t.RequiresCapability != "" && !caps.Supports(t.RequiresCapability) {
 			unsupported = append(unsupported, fmt.Sprintf("alert %s: runtime lacks capability %s", t.ID, t.RequiresCapability))
 			continue
 		}
@@ -40,22 +40,6 @@ func (p *Profiles) Desired(pol policy.ObservabilityPolicy, id state.WorkloadIden
 		rules = append(rules, ManagedRule{Rule: t, Owner: owner, Identity: id})
 	}
 	return rules, unsupported, nil
-}
-
-func supports(c runtime.Capabilities, name string) bool {
-	switch name {
-	case "WorkloadDiscovery":
-		return c.WorkloadDiscovery
-	case "TelemetryConfig":
-		return c.TelemetryConfig
-	case "HostTelemetry":
-		return c.HostTelemetry
-	case "NetworkTelemetry":
-		return c.NetworkTelemetry
-	case "AlertReconciliation":
-		return c.AlertReconciliation
-	}
-	return false
 }
 
 func anyTelemetry(t policy.Telemetry, names []string) bool {

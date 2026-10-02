@@ -52,6 +52,7 @@ type Adapter struct {
 	logger     *slog.Logger
 	remediator Remediator
 	caps       runtime.Capabilities
+	capsFixed  bool // WithCapabilities was used: it wins over launch-type detection
 	cls        classifier
 }
 
@@ -78,10 +79,14 @@ func WithRemediator(r Remediator) Option {
 	}
 }
 
-// WithCapabilities overrides the reported capabilities. The default is
-// Fargate-conservative: no host or network telemetry. Use
-// EC2Capabilities for EC2-backed clusters.
-func WithCapabilities(c runtime.Capabilities) Option { return func(a *Adapter) { a.caps = c } }
+// WithCapabilities fixes the capabilities of every workload, disabling
+// per-service launch-type detection. Without it, ResolveTarget derives
+// capabilities from each service's launch type or capacity provider (FARGATE
+// gets FargateCapabilities, EC2 gets EC2Capabilities) and the adapter default
+// is Fargate-conservative: no host or network telemetry.
+func WithCapabilities(c runtime.Capabilities) Option {
+	return func(a *Adapter) { a.caps, a.capsFixed = c, true }
+}
 
 // WithCollectorPatterns replaces the container-name fragments that identify a
 // metrics collector sidecar (DefaultCollectorPatterns).
@@ -123,8 +128,9 @@ func New(api API, opts ...Option) *Adapter {
 // Runtime implements runtime.RuntimeAdapter.
 func (a *Adapter) Runtime() runtime.RuntimeType { return RuntimeType }
 
-// Capabilities implements runtime.RuntimeAdapter. The value is adapter-wide,
-// not per workload; see WithCapabilities.
+// Capabilities implements runtime.RuntimeAdapter. It is the default used when
+// a workload's launch type is unknown; resolved workloads carry their own
+// (Workload.Capabilities) unless WithCapabilities was used.
 func (a *Adapter) Capabilities() runtime.Capabilities { return a.caps }
 
 var accountRE = regexp.MustCompile(`^[0-9]{12}$`)
@@ -213,6 +219,7 @@ func (a *Adapter) ResolveTarget(ctx context.Context, t policy.TargetRef) (runtim
 		arn = ServiceARN(t.Region, t.Account, t.Cluster, t.Service)
 	}
 	return runtime.Workload{
+		Capabilities: a.workloadCapabilities(svc),
 		Identity: state.WorkloadIdentity{
 			Account:     t.Account,
 			Region:      t.Region,
@@ -226,6 +233,44 @@ func (a *Adapter) ResolveTarget(ctx context.Context, t policy.TargetRef) (runtim
 		Ref:      t,
 		Revision: taskDefRevision(deref(svc.TaskDefinition)),
 	}, nil
+}
+
+// launchType returns "FARGATE" or "EC2" from the service's launch type or, for
+// capacity provider strategies, its providers (any FARGATE* provider wins, so
+// the result stays conservative). It returns "" when unknown.
+func launchType(svc types.Service) string {
+	if svc.LaunchType != "" {
+		return string(svc.LaunchType)
+	}
+	lt := ""
+	for _, cp := range svc.CapacityProviderStrategy {
+		name := deref(cp.CapacityProvider)
+		switch {
+		case strings.HasPrefix(name, "FARGATE"):
+			return string(types.LaunchTypeFargate)
+		case name != "":
+			lt = string(types.LaunchTypeEc2)
+		}
+	}
+	return lt
+}
+
+// workloadCapabilities returns the per-service capabilities, or nil to use the
+// adapter default.
+func (a *Adapter) workloadCapabilities(svc types.Service) *runtime.Capabilities {
+	if a.capsFixed {
+		return nil
+	}
+	var c runtime.Capabilities
+	switch types.LaunchType(launchType(svc)) {
+	case types.LaunchTypeFargate:
+		c = FargateCapabilities()
+	case types.LaunchTypeEc2:
+		c = EC2Capabilities()
+	default:
+		return nil
+	}
+	return &c
 }
 
 // taskDefRevision turns a task definition ARN into "family:revision".
@@ -266,14 +311,7 @@ func (a *Adapter) Observe(ctx context.Context, wl runtime.Workload) (state.Obser
 	tel := a.cls.derive(td.TaskDefinition.ContainerDefinitions)
 	revision := taskDefRevision(tdARN)
 
-	launch := string(svc.LaunchType)
-	if launch == "" {
-		for _, cp := range svc.CapacityProviderStrategy {
-			if strings.HasPrefix(deref(cp.CapacityProvider), "FARGATE") {
-				launch = string(types.LaunchTypeFargate)
-			}
-		}
-	}
+	launch := launchType(svc)
 	details := map[string]string{
 		DetailLaunchType:     launch,
 		DetailTaskDefinition: tdARN,

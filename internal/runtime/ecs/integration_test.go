@@ -10,6 +10,7 @@ import (
 	"github.com/example/portable-platform-reconciler/internal/controller"
 	"github.com/example/portable-platform-reconciler/internal/policy"
 	"github.com/example/portable-platform-reconciler/internal/runtime"
+	"github.com/example/portable-platform-reconciler/internal/state"
 )
 
 func configAuto() config.RuntimeConfig { return config.RuntimeConfig{Type: config.RuntimeAuto} }
@@ -80,25 +81,39 @@ func TestScenarios(t *testing.T) {
 	}
 }
 
-// TestLogRemediatorEngineDegraded documents that "aws" mode with the
-// LogRemediator leaves drift in place, so the engine reports it as not converged.
-func TestLogRemediatorEngineDegraded(t *testing.T) {
+// TestLogRemediatorEngineDryRun documents that "aws" mode with the
+// LogRemediator leaves drift in place; the engine reports a Degraded DryRun
+// without an error, so the key is not retried.
+func TestLogRemediatorEngineDryRun(t *testing.T) {
 	sim := NewSeededSimulation()
 	adapter := New(sim) // LogRemediator
 	pol := loadPolicy(t)
 	statuses := controller.NewStatusStore()
 	engine := controller.NewEngine(adapter, controller.NewMemoryPolicyStore(pol), statuses, nil)
-	if _, err := engine.ReconcileOnce(context.Background(), policy.Key(pol.Metadata.Name)); err == nil {
-		t.Error("ReconcileOnce() = nil error, want drift-remains error")
+	outs, err := engine.ReconcileOnce(context.Background(), policy.Key(pol.Metadata.Name))
+	if err != nil {
+		t.Errorf("ReconcileOnce() error = %v, want nil", err)
 	}
-	if st, _ := statuses.Get(pol.Metadata.Name); st.Phase != controller.PhaseDegraded {
-		t.Errorf("phase = %s, want Degraded", st.Phase)
+	if len(outs) != 1 || !outs[0].DryRun {
+		t.Errorf("outcomes = %+v, want one DryRun outcome", outs)
+	}
+	st, _ := statuses.Get(pol.Metadata.Name)
+	c, _ := st.Condition(controller.ConditionConfigurationCompliant)
+	if st.Phase != controller.PhaseDegraded || c.Reason != "DryRun" {
+		t.Errorf("phase = %s, condition = %+v, want Degraded/DryRun", st.Phase, c)
+	}
+}
+
+func TestFactoryAWSModeLogRemediatorReportsDryRun(t *testing.T) {
+	res, err := NewLogRemediator(nil).Remediate(context.Background(), state.WorkloadIdentity{}, []state.Action{{Name: state.ActionEnableLogs}})
+	if err != nil || !res.DryRun || res.Changed {
+		t.Errorf("Remediate() = %+v, %v, want DryRun and not Changed", res, err)
 	}
 }
 
 func TestFactorySimulated(t *testing.T) {
 	cfg := config.Default()
-	a, err := runtime.New(RuntimeType, cfg)
+	a, err := runtime.New(RuntimeType, cfg, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +126,7 @@ func TestFactorySimulated(t *testing.T) {
 		t.Errorf("seeded observe = %+v, %v, want logs off, metrics+traces on", obs, err)
 	}
 	cfg.ECS.Mode = "bogus"
-	if _, err := runtime.New(RuntimeType, cfg); err == nil {
+	if _, err := runtime.New(RuntimeType, cfg, nil); err == nil {
 		t.Error("New(bogus mode) = nil error")
 	}
 }

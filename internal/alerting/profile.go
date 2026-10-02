@@ -6,6 +6,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/example/portable-platform-reconciler/internal/state"
 )
 
 // ErrUnknownProfile is returned for an alert profile that is not registered.
@@ -68,13 +70,12 @@ const (
 
 // Rule IDs of the built-in golden-signal rules.
 const (
-	RuleLatencyP95       = "golden.latency.p95"
-	RuleErrorRate        = "golden.errors.rate"
-	RuleTraffic          = "golden.traffic.throughput"
-	RuleContainerCPU     = "golden.saturation.container.cpu"
-	RuleContainerMemory  = "golden.saturation.container.memory"
-	RuleHostCPU          = "golden.saturation.host.cpu"
-	capHostTelemetryName = "HostTelemetry"
+	RuleLatencyP95      = "golden.latency.p95"
+	RuleErrorRate       = "golden.errors.rate"
+	RuleTraffic         = "golden.traffic.throughput"
+	RuleContainerCPU    = "golden.saturation.container.cpu"
+	RuleContainerMemory = "golden.saturation.container.memory"
+	RuleHostCPU         = "golden.saturation.host.cpu"
 )
 
 var (
@@ -119,7 +120,7 @@ var (
 		Aggregation: AggAvg, Operator: OpAbove, Threshold: 90, Unit: UnitPercent,
 		Window: 10 * time.Minute, Severity: SeverityWarning,
 		Scope: ScopeHost, Resource: ResourceCPU,
-		RequiresCapability: capHostTelemetryName,
+		RequiresCapability: state.CapHostTelemetry,
 	}
 )
 

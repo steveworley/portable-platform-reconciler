@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +29,10 @@ type Outcome struct {
 	// NoOp is true when no action was required (already compliant) or the
 	// policy was skipped.
 	NoOp bool
+	// DryRun is true when the adapter deliberately changed nothing (simulated
+	// or dry-run mode). The phase is Degraded with reason DryRun and the
+	// reconcile is not retried.
+	DryRun bool
 	// Unsupported lists drifted features the runtime cannot satisfy.
 	Unsupported []string
 	Phase       Phase
@@ -204,9 +209,13 @@ func (e *Engine) reconcilePolicy(ctx context.Context, key, name string) (Outcome
 
 	p, ok := e.policies.Get(name)
 	if !ok {
+		out.NoOp = true
+		if err := e.finalize(ctx, name); err != nil {
+			out.Phase = PhaseError
+			return out, err
+		}
 		e.statuses.Delete(name)
 		e.logger.Info("policy not found, dropping", "policy", name)
-		out.NoOp = true
 		return out, nil
 	}
 	if p.Target.Runtime != rt {
@@ -254,9 +263,10 @@ func (e *Engine) reconcilePolicy(ctx context.Context, key, name string) (Outcome
 	}
 
 	desired := state.FromPolicy(p)
-	caps := e.adapter.Capabilities()
+	caps := wl.EffectiveCapabilities(e.adapter.Capabilities())
 	diff := state.Diff(desired, observed, caps)
 
+	var dryRunMsg string
 	if diff.InSync() {
 		out.NoOp = true
 		e.logger.Info("already compliant, no action", "resource", resource, "runtime", rt, "policy", name)
@@ -273,18 +283,25 @@ func (e *Engine) reconcilePolicy(ctx context.Context, key, name string) (Outcome
 		st.LastActions = diff.Actions
 		e.logger.Debug("adapter reconcile result", "resource", resource, "changed", res.Changed, "message", res.Message)
 
-		// Re-read and re-diff to confirm convergence.
-		observed, err = e.adapter.Observe(ctx, wl)
-		if err != nil {
-			st.setCondition(ConditionReconciled, ConditionFalse, "ObserveFailed", err.Error())
-			return finish(PhaseError, fmt.Errorf("re-observe: %w", err))
-		}
-		diff = state.Diff(desired, observed, caps)
-		if !diff.InSync() {
-			st.setCondition(ConditionCapabilitiesSatisfied, ConditionTrue, "Supported", "")
-			st.setCondition(ConditionConfigurationCompliant, ConditionFalse, "DriftRemains", fmt.Sprintf("%d action(s) still required after reconcile", len(diff.Actions)))
-			st.setCondition(ConditionReconciled, ConditionFalse, "NotConverged", errNotConverged.Error())
-			return finish(PhaseDegraded, errNotConverged)
+		if res.DryRun {
+			// Nothing was changed on purpose; do not treat remaining drift as
+			// a failure. The periodic resync re-evaluates.
+			out.DryRun = true
+			dryRunMsg = "dry run, would apply: " + describeActions(diff.Actions)
+		} else {
+			// Re-read and re-diff to confirm convergence.
+			observed, err = e.adapter.Observe(ctx, wl)
+			if err != nil {
+				st.setCondition(ConditionReconciled, ConditionFalse, "ObserveFailed", err.Error())
+				return finish(PhaseError, fmt.Errorf("re-observe: %w", err))
+			}
+			diff = state.Diff(desired, observed, caps)
+			if !diff.InSync() {
+				st.setCondition(ConditionCapabilitiesSatisfied, ConditionTrue, "Supported", "")
+				st.setCondition(ConditionConfigurationCompliant, ConditionFalse, "DriftRemains", fmt.Sprintf("%d action(s) still required after reconcile", len(diff.Actions)))
+				st.setCondition(ConditionReconciled, ConditionFalse, "NotConverged", errNotConverged.Error())
+				return finish(PhaseDegraded, errNotConverged)
+			}
 		}
 	}
 
@@ -299,6 +316,10 @@ func (e *Engine) reconcilePolicy(ctx context.Context, key, name string) (Outcome
 	} else {
 		st.setCondition(ConditionCapabilitiesSatisfied, ConditionTrue, "Supported", "")
 		st.setCondition(ConditionConfigurationCompliant, ConditionTrue, "Compliant", "")
+	}
+	if out.DryRun {
+		phase = PhaseDegraded
+		st.setCondition(ConditionConfigurationCompliant, ConditionFalse, "DryRun", dryRunMsg)
 	}
 
 	// Additional steps (e.g. alert backend reconciliation).
@@ -337,6 +358,42 @@ func (e *Engine) reconcilePolicy(ctx context.Context, key, name string) (Outcome
 	}
 	st.setCondition(ConditionReconciled, ConditionTrue, "Reconciled", "")
 	return finish(phase, nil)
+}
+
+// finalize runs every Finalizer step for a deleted policy whose workload is
+// known from its last recorded status. A policy that never resolved a workload
+// owns nothing to clean up.
+func (e *Engine) finalize(ctx context.Context, name string) error {
+	prev, ok := e.statuses.Get(name)
+	if !ok || prev.Workload == nil {
+		return nil
+	}
+	in := FinalizeInput{PolicyName: name, Workload: *prev.Workload, Capabilities: e.adapter.Capabilities()}
+	var errs []error
+	for _, step := range e.steps {
+		f, ok := step.(Finalizer)
+		if !ok {
+			continue
+		}
+		if err := f.Finalize(ctx, in); err != nil {
+			errs = append(errs, fmt.Errorf("finalize step %s: %w", step.Name(), err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		prev.Phase = PhaseError
+		prev.setCondition(ConditionFinalized, ConditionFalse, "FinalizeFailed", err.Error())
+		e.statuses.Set(prev)
+		return err
+	}
+	return nil
+}
+
+func describeActions(actions []state.Action) string {
+	names := make([]string, len(actions))
+	for i, a := range actions {
+		names[i] = string(a.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 func (s *PolicyStatus) setCondition(t ConditionType, status ConditionStatus, reason, msg string) {

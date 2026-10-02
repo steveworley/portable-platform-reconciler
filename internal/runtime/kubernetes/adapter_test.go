@@ -343,11 +343,30 @@ func TestReconcileDryRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Changed {
-		t.Error("Changed = true, want false in dry-run")
+	if res.Changed || !res.DryRun {
+		t.Errorf("result = %+v, want DryRun and not Changed", res)
 	}
 	if n := writes(c); n != 0 {
 		t.Errorf("write actions = %d, want 0", n)
+	}
+}
+
+func TestEngineDryRunDoesNotRetry(t *testing.T) {
+	c := fake.NewSimpleClientset(deployment("ns", "api", nil, nil))
+	pol := policy.ObservabilityPolicy{
+		Metadata: policy.Metadata{Name: "api", Generation: 1},
+		Target:   target("ns", "api"),
+		Spec:     policy.Spec{Telemetry: policy.Telemetry{Logs: policy.SignalSpec{Enabled: true}}},
+	}
+	statuses := controller.NewStatusStore()
+	engine := controller.NewEngine(New(c), controller.NewMemoryPolicyStore(pol), statuses, nil)
+	outs, err := engine.ReconcileOnce(context.Background(), policy.Key("api"))
+	if err != nil || len(outs) != 1 || !outs[0].DryRun {
+		t.Fatalf("ReconcileOnce() = %+v, %v, want one DryRun outcome and no error", outs, err)
+	}
+	st, _ := statuses.Get("api")
+	if cond, _ := st.Condition(controller.ConditionConfigurationCompliant); st.Phase != controller.PhaseDegraded || cond.Reason != "DryRun" {
+		t.Errorf("phase = %q, condition = %+v", st.Phase, cond)
 	}
 }
 

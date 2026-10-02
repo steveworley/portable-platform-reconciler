@@ -17,8 +17,16 @@ var _ state.CapabilityChecker = Capabilities{}
 // Supports reports whether the capability is available.
 func (c Capabilities) Supports(cp state.Capability) bool {
 	switch cp {
+	case state.CapWorkloadDiscovery:
+		return c.WorkloadDiscovery
 	case state.CapTelemetryConfig:
 		return c.TelemetryConfig
+	case state.CapHostTelemetry:
+		return c.HostTelemetry
+	case state.CapNetworkTelemetry:
+		return c.NetworkTelemetry
+	case state.CapAlertReconciliation:
+		return c.AlertReconciliation
 	}
 	return false
 }

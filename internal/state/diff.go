@@ -39,9 +39,14 @@ type Action struct {
 // Capability is a runtime feature that desired state may depend on.
 type Capability string
 
-// Capabilities consulted by Diff. They mirror runtime.Capabilities fields.
+// Capabilities a runtime may offer. Each mirrors a runtime.Capabilities field
+// of the same name, and is the single vocabulary shared by Diff and alerting.
 const (
-	CapTelemetryConfig Capability = "TelemetryConfig"
+	CapWorkloadDiscovery   Capability = "WorkloadDiscovery"
+	CapTelemetryConfig     Capability = "TelemetryConfig"
+	CapHostTelemetry       Capability = "HostTelemetry"
+	CapNetworkTelemetry    Capability = "NetworkTelemetry"
+	CapAlertReconciliation Capability = "AlertReconciliation"
 )
 
 // CapabilityChecker reports whether a runtime supports a capability.
@@ -98,4 +103,8 @@ type ReconcileResult struct {
 	Applied []Action `json:"applied,omitempty"`
 	Changed bool     `json:"changed"`
 	Message string   `json:"message,omitempty"`
+	// DryRun is set when the adapter deliberately changed nothing (simulated or
+	// dry-run mode). The engine reports the would-be actions without treating
+	// the remaining drift as a failure.
+	DryRun bool `json:"dryRun,omitempty"`
 }

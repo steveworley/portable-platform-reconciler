@@ -47,7 +47,10 @@ const (
 
 var errNotConverged = errors.New("alert rules differ from backend after reconcile")
 
-var _ controller.ReconcileStep = (*Step)(nil)
+var (
+	_ controller.ReconcileStep = (*Step)(nil)
+	_ controller.Finalizer     = (*Step)(nil)
+)
 
 // Step reconciles the policy's alert profile into a Backend. It holds no
 // per-workload state: the backend is re-read on every run.
@@ -142,6 +145,27 @@ func (s *Step) Reconcile(ctx context.Context, in controller.StepInput) (controll
 	msg := fmt.Sprintf("%d alert rule(s) reconciled into %s", len(actual), s.backend.Name())
 	res.Conditions = []controller.Condition{cond(controller.ConditionTrue, ReasonReconciled, msg)}
 	return res, nil
+}
+
+// Finalize implements controller.Finalizer: it deletes every rule the backend
+// holds for the deleted policy on its last known workload. Like all
+// finalization it relies on the in-memory status; see controller.Finalizer.
+func (s *Step) Finalize(ctx context.Context, in controller.FinalizeInput) error {
+	owner := OwnerFor(in.PolicyName, in.Workload)
+	rules, err := s.backend.List(ctx, owner)
+	if err != nil {
+		return fmt.Errorf("list alert rules: %w", err)
+	}
+	var errs []error
+	for _, r := range rules {
+		s.logger.Info("alert rule write",
+			"resource", in.Workload.Workload, "runtime", in.Workload.Runtime,
+			"backend", s.backend.Name(), "action", string(ActionDeleteRule), "rule", r.ID)
+		if err := s.backend.Delete(ctx, r); err != nil {
+			errs = append(errs, fmt.Errorf("%s %s: %w", ActionDeleteRule, r.ID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Step) apply(ctx context.Context, in controller.StepInput, plan Plan, res *controller.StepResult) error {

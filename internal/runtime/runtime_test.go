@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/example/portable-platform-reconciler/internal/config"
@@ -30,7 +31,7 @@ func (s stubAdapter) Reconcile(context.Context, state.DesiredState, state.Observ
 }
 
 func stubFactory(t RuntimeType) Factory {
-	return func(config.Config) (RuntimeAdapter, error) { return stubAdapter{t}, nil }
+	return func(config.Config, *slog.Logger) (RuntimeAdapter, error) { return stubAdapter{t}, nil }
 }
 
 // newTestRegistry registers kubernetes-like, ecs-like and a dummy third runtime,
@@ -91,7 +92,7 @@ func TestRegisterThirdRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := r.New(typ, config.Default())
+	a, err := r.New(typ, config.Default(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +111,7 @@ func TestRegisterThirdRuntime(t *testing.T) {
 	if err := r.ValidateTarget(policy.TargetRef{Runtime: "nomad"}); !errors.Is(err, ErrUnknownRuntime) {
 		t.Errorf("ValidateTarget(unregistered) error = %v, want ErrUnknownRuntime", err)
 	}
-	if _, err := r.New("nomad", config.Default()); !errors.Is(err, ErrUnknownRuntime) {
+	if _, err := r.New("nomad", config.Default(), nil); !errors.Is(err, ErrUnknownRuntime) {
 		t.Errorf("New(unregistered) error = %v", err)
 	}
 }
@@ -138,5 +139,58 @@ func TestCapabilitiesSupports(t *testing.T) {
 	}
 	if (Capabilities{}).Supports(state.CapTelemetryConfig) {
 		t.Error("Supports(TelemetryConfig) = true, want false")
+	}
+}
+
+func TestSupportsAllCapabilities(t *testing.T) {
+	all := []state.Capability{
+		state.CapWorkloadDiscovery, state.CapTelemetryConfig, state.CapHostTelemetry,
+		state.CapNetworkTelemetry, state.CapAlertReconciliation,
+	}
+	for _, c := range all {
+		if (Capabilities{}).Supports(c) {
+			t.Errorf("zero Capabilities.Supports(%s) = true", c)
+		}
+	}
+	for i, c := range all {
+		caps := Capabilities{
+			WorkloadDiscovery:   i == 0,
+			TelemetryConfig:     i == 1,
+			HostTelemetry:       i == 2,
+			NetworkTelemetry:    i == 3,
+			AlertReconciliation: i == 4,
+		}
+		for j, other := range all {
+			if got := caps.Supports(other); got != (i == j) {
+				t.Errorf("only %s set: Supports(%s) = %v", c, other, got)
+			}
+		}
+	}
+	if (Capabilities{}).Supports("Bogus") {
+		t.Error("Supports(unknown) = true")
+	}
+}
+
+func TestEffectiveCapabilities(t *testing.T) {
+	def := Capabilities{TelemetryConfig: true}
+	if got := (Workload{}).EffectiveCapabilities(def); got != def {
+		t.Errorf("no override = %+v, want default", got)
+	}
+	own := Capabilities{HostTelemetry: true}
+	if got := (Workload{Capabilities: &own}).EffectiveCapabilities(def); got != own {
+		t.Errorf("override = %+v, want %+v", got, own)
+	}
+}
+
+func TestNewPassesLogger(t *testing.T) {
+	r := NewRegistry()
+	var got *slog.Logger
+	r.Register("x", func(_ config.Config, l *slog.Logger) (RuntimeAdapter, error) { got = l; return stubAdapter{"x"}, nil }, nil)
+	if _, err := r.New("x", config.Default(), nil); err != nil || got == nil {
+		t.Fatalf("nil logger must be replaced, got %v, %v", got, err)
+	}
+	l := slog.New(slog.DiscardHandler)
+	if _, err := r.New("x", config.Default(), l); err != nil || got != l {
+		t.Errorf("logger not passed through: %v, %v", got, err)
 	}
 }

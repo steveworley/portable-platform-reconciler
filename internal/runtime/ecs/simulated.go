@@ -3,6 +3,7 @@ package ecs
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -170,9 +171,7 @@ func (s *SimulatedECS) Calls() map[string]int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]int, len(s.calls))
-	for k, v := range s.calls {
-		out[k] = v
-	}
+	maps.Copy(out, s.calls)
 	return out
 }
 
@@ -360,11 +359,7 @@ func cloneContainer(c types.ContainerDefinition) types.ContainerDefinition {
 	}
 	c.Environment = append([]types.KeyValuePair(nil), c.Environment...)
 	if c.DockerLabels != nil {
-		m := make(map[string]string, len(c.DockerLabels))
-		for k, v := range c.DockerLabels {
-			m[k] = v
-		}
-		c.DockerLabels = m
+		c.DockerLabels = maps.Clone(c.DockerLabels)
 	}
 	return c
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/example/portable-platform-reconciler/internal/policy"
 	"github.com/example/portable-platform-reconciler/internal/runtime"
 	"github.com/example/portable-platform-reconciler/internal/runtime/fake"
+	"github.com/example/portable-platform-reconciler/internal/state"
 )
 
 const rt runtime.RuntimeType = "fake"
@@ -267,5 +268,158 @@ func TestDefaultRegistryHasMemory(t *testing.T) {
 	be, err := alerting.New("memory", config.Default(), nil)
 	if err != nil || be.Name() != "memory" {
 		t.Errorf("New(memory) = %v, %v", be, err)
+	}
+}
+
+func TestFinalizeDeletesOnlyDeletedPolicysRules(t *testing.T) {
+	ctx := context.Background()
+	be := memory.New()
+	store := controller.NewMemoryPolicyStore(pol("payments-api", "standard"), pol("orders", "minimal"))
+	e := newEnv(t, store, be, allCaps)
+	e.adapter.AddWorkload("orders", true, true, true)
+	for _, name := range []string{"payments-api", "orders"} {
+		if _, err := e.engine.ReconcileOnce(ctx, policy.Key(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(be.Rules()); n != 8 {
+		t.Fatalf("rules = %d, want 6 + 2", n)
+	}
+
+	store.Delete("payments-api")
+	be.ResetWrites()
+	if _, err := e.engine.ReconcileOnce(ctx, policy.Key("payments-api")); err != nil {
+		t.Fatalf("ReconcileOnce() after delete = %v", err)
+	}
+	if got := be.Writes(); got != (memory.Writes{Deletes: 6}) {
+		t.Errorf("writes = %+v, want 6 deletes", got)
+	}
+	rules := be.Rules()
+	if len(rules) != 2 {
+		t.Fatalf("rules left = %d, want 2", len(rules))
+	}
+	for _, r := range rules {
+		if r.Owner.PolicyName != "orders" {
+			t.Errorf("rule %s of %q survived, want only orders", r.ID, r.Owner.PolicyName)
+		}
+	}
+	if _, ok := e.statuses.Get("payments-api"); ok {
+		t.Error("status kept after finalize")
+	}
+}
+
+type deleteFailingBackend struct {
+	*memory.Backend
+	fail bool
+}
+
+func (d *deleteFailingBackend) Delete(ctx context.Context, r alerting.ManagedRule) error {
+	if d.fail {
+		return errors.New("backend down")
+	}
+	return d.Backend.Delete(ctx, r)
+}
+
+func TestFinalizeFailureKeepsStatusAndRetries(t *testing.T) {
+	ctx := context.Background()
+	be := &deleteFailingBackend{Backend: memory.New()}
+	store := controller.NewMemoryPolicyStore(pol("payments-api", "minimal"))
+	e := newEnv(t, store, be, allCaps)
+	e.reconcile(t)
+
+	store.Delete("payments-api")
+	be.fail = true
+	if _, err := e.engine.ReconcileOnce(ctx, policy.Key("payments-api")); err == nil {
+		t.Fatal("ReconcileOnce() = nil error, want finalize failure")
+	}
+	st, ok := e.statuses.Get("payments-api")
+	if !ok {
+		t.Fatal("status dropped while rules remain")
+	}
+	if c, _ := st.Condition(controller.ConditionFinalized); c.Status != controller.ConditionFalse {
+		t.Errorf("Finalized = %+v, want False", c)
+	}
+	if len(be.Rules()) != 2 {
+		t.Errorf("rules = %d, want 2 still present", len(be.Rules()))
+	}
+
+	be.fail = false
+	if _, err := e.engine.ReconcileOnce(ctx, policy.Key("payments-api")); err != nil {
+		t.Fatalf("retry error = %v", err)
+	}
+	if len(be.Rules()) != 0 {
+		t.Errorf("rules = %d, want 0", len(be.Rules()))
+	}
+	if _, ok := e.statuses.Get("payments-api"); ok {
+		t.Error("status kept after successful finalize")
+	}
+}
+
+func seedRules(t *testing.T, be *memory.Backend, policies ...string) {
+	t.Helper()
+	for _, name := range policies {
+		id := state.WorkloadIdentity{Service: name, Workload: name, Runtime: "fake", RuntimeID: name}
+		rules, _, err := alerting.DesiredRules(pol(name, "minimal"), id, allCaps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range rules {
+			if err := be.Create(context.Background(), r); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
+func TestPruneOrphans(t *testing.T) {
+	ctx := context.Background()
+	be := memory.New()
+	seedRules(t, be, "live", "orphan")
+	keep := func(o alerting.Owner) bool { return o.PolicyName == "live" }
+
+	rep, err := alerting.Prune(ctx, be, keep, true)
+	if err != nil || !rep.DryRun || len(rep.Pruned) != 2 || rep.Kept != 2 {
+		t.Fatalf("dry run = %+v, %v, want 2 reported and 2 kept", rep, err)
+	}
+	if len(be.Rules()) != 4 || be.Writes().Deletes != 0 {
+		t.Errorf("dry run changed the backend: %d rules, %+v", len(be.Rules()), be.Writes())
+	}
+
+	rep, err = alerting.Prune(ctx, be, keep, false)
+	if err != nil || rep.DryRun || len(rep.Pruned) != 2 {
+		t.Fatalf("prune = %+v, %v", rep, err)
+	}
+	for _, r := range be.Rules() {
+		if r.Owner.PolicyName != "live" {
+			t.Errorf("rule of %q survived", r.Owner.PolicyName)
+		}
+	}
+	if len(be.Rules()) != 2 {
+		t.Errorf("rules = %d, want 2", len(be.Rules()))
+	}
+}
+
+func TestPruneKeepNothingCleansOldBackend(t *testing.T) {
+	be := memory.New(memory.WithName("old"))
+	seedRules(t, be, "a", "b")
+	rep, err := alerting.Prune(context.Background(), be, nil, false)
+	if err != nil || len(rep.Pruned) != 4 || rep.Kept != 0 || len(be.Rules()) != 0 {
+		t.Errorf("Prune(nil keep) = %+v, %v, %d rules left", rep, err, len(be.Rules()))
+	}
+}
+
+type listOnlyBackend struct{ alerting.Backend }
+
+func TestPruneErrors(t *testing.T) {
+	ctx := context.Background()
+	if _, err := alerting.Prune(ctx, listOnlyBackend{memory.New()}, nil, false); !errors.Is(err, alerting.ErrPruneUnsupported) {
+		t.Errorf("non-Lister error = %v, want ErrPruneUnsupported", err)
+	}
+
+	be := &deleteFailingBackend{Backend: memory.New(), fail: true}
+	seedRules(t, be.Backend, "a")
+	rep, err := alerting.Prune(ctx, be, nil, false)
+	if err == nil || len(rep.Pruned) != 0 {
+		t.Errorf("Prune() = %+v, %v, want failures reported and none counted as pruned", rep, err)
 	}
 }

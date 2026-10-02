@@ -53,7 +53,10 @@ type Backend struct {
 	policyID  string
 }
 
-var _ alerting.Backend = (*Backend)(nil)
+var (
+	_ alerting.Backend = (*Backend)(nil)
+	_ alerting.Lister  = (*Backend)(nil)
+)
 
 type options struct {
 	client Client
@@ -169,6 +172,26 @@ func (b *Backend) List(ctx context.Context, owner alerting.Owner) ([]alerting.Ma
 			return nil, err
 		}
 		if ok && r.Owner == owner {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// ListAll implements alerting.Lister. Conditions without our ownership tags
+// are skipped, so they can never be pruned.
+func (b *Backend) ListAll(ctx context.Context) ([]alerting.ManagedRule, error) {
+	conds, err := b.search(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list conditions: %w", err)
+	}
+	var out []alerting.ManagedRule
+	for _, c := range conds {
+		r, ok, err := ruleFromCondition(c)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			out = append(out, r)
 		}
 	}

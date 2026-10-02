@@ -17,9 +17,8 @@ type Remediator interface {
 // LogRemediator only logs the actions it would take. It is used in "aws" mode
 // because the POC never modifies production task definitions (spec section 7).
 //
-// It reports Changed=false, so the engine's re-observe still sees drift and
-// marks the policy Degraded. That is expected for simulated remediation
-// against a real backend.
+// It reports Changed=false and DryRun=true, so the engine records the policy
+// as Degraded (reason DryRun) without retrying.
 type LogRemediator struct {
 	logger *slog.Logger
 }
@@ -47,6 +46,7 @@ func (r *LogRemediator) Remediate(_ context.Context, id state.WorkloadIdentity, 
 	return state.ReconcileResult{
 		Applied: actions,
 		Changed: false,
+		DryRun:  true,
 		Message: "simulated: ECS task definitions are never modified; actions were only logged",
 	}, nil
 }

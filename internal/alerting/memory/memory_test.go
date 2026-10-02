@@ -43,3 +43,18 @@ func TestBackend(t *testing.T) {
 		t.Errorf("Writes() = %+v (tamper/remove must not count)", got)
 	}
 }
+
+func TestListAll(t *testing.T) {
+	ctx := context.Background()
+	b := New()
+	for _, p := range []string{"p1", "p2"} {
+		o := alerting.Owner{PolicyName: p, WorkloadKey: "fake:" + p, Runtime: "fake"}
+		if err := b.Create(ctx, alerting.ManagedRule{Rule: alerting.Rule{ID: "r1"}, Owner: o}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := b.ListAll(ctx)
+	if err != nil || len(got) != 2 {
+		t.Errorf("ListAll() = %v, %v, want both owners' rules", got, err)
+	}
+}

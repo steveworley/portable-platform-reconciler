@@ -252,6 +252,43 @@ func TestListIgnoresUnmanagedConditions(t *testing.T) {
 	}
 }
 
+func TestListAllAndPruneNeverTouchUnmanaged(t *testing.T) {
+	ctx := context.Background()
+	b, client := newDryRun(t)
+	k8s, k8sOwner := desiredList(t, k8sID)
+	ecs, ecsOwner := desiredList(t, ecsID)
+	apply(t, b, k8sOwner, k8s)
+	apply(t, b, ecsOwner, ecs)
+	client.conds["99"] = Condition{ID: "99", PolicyID: "2", Name: "[portable-reconciler] hand made", Description: "just a human", Enabled: true}
+
+	all, err := b.ListAll(ctx)
+	if err != nil || len(all) != 12 {
+		t.Fatalf("ListAll() = %d rules, %v, want 12 managed (hand-made excluded)", len(all), err)
+	}
+
+	keep := func(o alerting.Owner) bool { return o == k8sOwner }
+	rep, err := alerting.Prune(ctx, b, keep, true)
+	if err != nil || len(rep.Pruned) != 6 || len(client.Conditions()) != 13 {
+		t.Fatalf("dry run = %+v, %v, %d conditions", rep, err, len(client.Conditions()))
+	}
+	rep, err = alerting.Prune(ctx, b, keep, false)
+	if err != nil || len(rep.Pruned) != 6 || rep.Kept != 6 {
+		t.Fatalf("prune = %+v, %v", rep, err)
+	}
+	if got, _ := b.List(ctx, ecsOwner); len(got) != 0 {
+		t.Errorf("ecs rules left = %d, want 0", len(got))
+	}
+	if got, _ := b.List(ctx, k8sOwner); len(got) != 6 {
+		t.Errorf("kept rules = %d, want 6", len(got))
+	}
+	if _, ok := client.Conditions()["99"]; !ok {
+		t.Error("hand-made condition was deleted")
+	}
+	if rep, err = alerting.Prune(ctx, b, nil, false); err != nil || len(rep.Pruned) != 6 || len(client.Conditions()) != 1 {
+		t.Errorf("keep-nothing = %+v, %v, %d conditions left, want only the hand-made one", rep, err, len(client.Conditions()))
+	}
+}
+
 type recordingClient struct {
 	ops  []string
 	vars []map[string]any

@@ -83,8 +83,8 @@ func WithLogger(l *slog.Logger) Option {
 
 // WithApplyAnnotations enables writing annotations. When false (the default)
 // Reconcile is a dry run: it logs the actions and returns Changed=false, so
-// the engine's re-observe still sees drift and reports the policy Degraded.
-// That is expected in dry-run mode.
+// DryRun is set, so the engine reports the policy Degraded (reason DryRun)
+// without retrying.
 func WithApplyAnnotations(apply bool) Option {
 	return func(a *Adapter) { a.applyAnnotations = apply }
 }
@@ -249,8 +249,7 @@ func desiredReplicas(d *appsv1.Deployment) int32 {
 // skipped, so a compliant Deployment receives no write.
 //
 // With applyAnnotations false this is a dry run: actions are logged and
-// Changed is false. The engine's post-reconcile check will then report the
-// policy Degraded (DriftRemains); that is expected for dry-run.
+// Changed is false and DryRun is true.
 func (a *Adapter) Reconcile(ctx context.Context, _ state.DesiredState, observed state.ObservedState, actions []state.Action) (state.ReconcileResult, error) {
 	id := observed.Workload
 	resource := id.Workload
@@ -258,7 +257,7 @@ func (a *Adapter) Reconcile(ctx context.Context, _ state.DesiredState, observed 
 		for _, act := range actions {
 			a.logger.Info("dry-run: would apply action", "resource", resource, "runtime", id.Runtime, "action", string(act.Name), "reason", act.Reason)
 		}
-		return state.ReconcileResult{Changed: false, Message: "dry-run: applyAnnotations is disabled"}, nil
+		return state.ReconcileResult{Changed: false, DryRun: true, Message: "dry-run: applyAnnotations is disabled"}, nil
 	}
 
 	ns, name, err := splitRuntimeID(id.RuntimeID)

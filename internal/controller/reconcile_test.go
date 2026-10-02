@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -347,5 +348,113 @@ func TestReconcileStepErrorAndUnsupported(t *testing.T) {
 	outs, err = h.engine.ReconcileOnce(context.Background(), policy.Key("payments-api"))
 	if err != nil || outs[0].Phase != PhaseDegraded {
 		t.Errorf("outcome = %+v, err = %v; want Degraded, nil", outs[0], err)
+	}
+}
+
+func TestDryRunDegradedWithoutRetry(t *testing.T) {
+	h := newHarness(t, nil)
+	h.adapter.SetDryRun(true)
+
+	outs, err := h.engine.ReconcileOnce(context.Background(), policy.Key("payments-api"))
+	if err != nil {
+		t.Fatalf("ReconcileOnce() error = %v, want nil (no retry)", err)
+	}
+	if len(outs) != 1 || !outs[0].DryRun || outs[0].Phase != PhaseDegraded || len(outs[0].Actions) != 3 {
+		t.Fatalf("outcome = %+v, want DryRun Degraded with 3 actions", outs)
+	}
+	st, _ := h.statuses.Get("payments-api")
+	c, _ := st.Condition(ConditionConfigurationCompliant)
+	if st.Phase != PhaseDegraded || c.Status != ConditionFalse || c.Reason != "DryRun" || !strings.Contains(c.Message, string(state.ActionEnableLogs)) {
+		t.Errorf("phase = %q, condition = %+v", st.Phase, c)
+	}
+	if r, _ := st.Condition(ConditionReconciled); r.Status != ConditionTrue {
+		t.Errorf("Reconciled = %+v, want True", r)
+	}
+
+	// Through the queue: one reconcile, no backoff retries.
+	h.run(t, 1)
+	h.engine.Enqueue(policy.Key("payments-api"))
+	waitFor(t, "first reconcile", func() bool { return len(h.seen()) >= 2 })
+	time.Sleep(30 * time.Millisecond)
+	if n := len(h.seen()); n != 2 {
+		t.Errorf("observed %d reconciles, want 2 (one direct, one queued, no retries)", n)
+	}
+}
+
+func TestPerWorkloadCapabilities(t *testing.T) {
+	h := newHarness(t, nil)
+	h.adapter.SetWorkloadCapabilities("payments-api", runtime.Capabilities{WorkloadDiscovery: true})
+
+	outs, err := h.engine.ReconcileOnce(context.Background(), policy.Key("payments-api"))
+	if err != nil || len(outs) != 1 {
+		t.Fatalf("ReconcileOnce() = %+v, %v", outs, err)
+	}
+	if len(outs[0].Actions) != 0 || len(outs[0].Unsupported) != 3 || outs[0].Phase != PhaseDegraded {
+		t.Errorf("outcome = %+v, want 3 unsupported from workload caps (adapter default supports telemetry)", outs[0])
+	}
+}
+
+type recordingStep struct {
+	caps    runtime.Capabilities
+	fin     []FinalizeInput
+	finErrs int
+}
+
+func (s *recordingStep) Name() string { return "rec" }
+func (s *recordingStep) Reconcile(_ context.Context, in StepInput) (StepResult, error) {
+	s.caps = in.Capabilities
+	return StepResult{}, nil
+}
+func (s *recordingStep) Finalize(_ context.Context, in FinalizeInput) error {
+	if s.finErrs > 0 {
+		s.finErrs--
+		return errors.New("backend down")
+	}
+	s.fin = append(s.fin, in)
+	return nil
+}
+
+func TestStepInputUsesWorkloadCapabilities(t *testing.T) {
+	step := &recordingStep{}
+	h := newHarness(t, nil, WithSteps(step))
+	want := runtime.Capabilities{WorkloadDiscovery: true, TelemetryConfig: true, HostTelemetry: true}
+	h.adapter.SetWorkloadCapabilities("payments-api", want)
+	if _, err := h.engine.ReconcileOnce(context.Background(), policy.Key("payments-api")); err != nil {
+		t.Fatal(err)
+	}
+	if step.caps != want {
+		t.Errorf("StepInput.Capabilities = %+v, want %+v", step.caps, want)
+	}
+}
+
+func TestFinalizeOnPolicyDelete(t *testing.T) {
+	step := &recordingStep{finErrs: 1}
+	h := newHarness(t, nil, WithSteps(step))
+	ctx := context.Background()
+	key := policy.Key("payments-api")
+	if _, err := h.engine.ReconcileOnce(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+
+	h.store.Delete("payments-api")
+	if _, err := h.engine.ReconcileOnce(ctx, key); err == nil {
+		t.Fatal("ReconcileOnce() = nil error, want finalize failure")
+	}
+	st, ok := h.statuses.Get("payments-api")
+	if !ok {
+		t.Fatal("status deleted despite finalizer failure")
+	}
+	if c, _ := st.Condition(ConditionFinalized); c.Status != ConditionFalse || c.Reason != "FinalizeFailed" {
+		t.Errorf("Finalized condition = %+v", c)
+	}
+
+	if _, err := h.engine.ReconcileOnce(ctx, key); err != nil {
+		t.Fatalf("retry error = %v", err)
+	}
+	if _, ok := h.statuses.Get("payments-api"); ok {
+		t.Error("status kept after successful finalize")
+	}
+	if len(step.fin) != 1 || step.fin[0].PolicyName != "payments-api" || step.fin[0].Workload.Workload != "payments-api" {
+		t.Errorf("finalize inputs = %+v", step.fin)
 	}
 }

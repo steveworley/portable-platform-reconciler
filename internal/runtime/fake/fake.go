@@ -36,6 +36,7 @@ type workload struct {
 	logs     bool
 	metrics  bool
 	traces   bool
+	caps     *runtime.Capabilities
 }
 
 // Adapter is a RuntimeAdapter backed by memory. Targets are identified by
@@ -47,6 +48,7 @@ type Adapter struct {
 	mu        sync.Mutex
 	workloads map[string]*workload
 	calls     []Call
+	dryRun    bool
 	failures  map[string]*failure
 }
 
@@ -90,6 +92,23 @@ func (a *Adapter) SetTelemetry(name string, logs, metrics, traces bool) {
 	}
 }
 
+// SetWorkloadCapabilities gives workload name its own capabilities, as an
+// adapter with per-workload detection (e.g. ECS launch type) would.
+func (a *Adapter) SetWorkloadCapabilities(name string, c runtime.Capabilities) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if w, ok := a.workloads[name]; ok {
+		w.caps = &c
+	}
+}
+
+// SetDryRun makes Reconcile change nothing and report ReconcileResult.DryRun.
+func (a *Adapter) SetDryRun(dryRun bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dryRun = dryRun
+}
+
 // FailNext makes the next n calls of op ("resolve", "observe", "reconcile") return err.
 func (a *Adapter) FailNext(op string, n int, err error) {
 	a.mu.Lock()
@@ -129,7 +148,7 @@ func (a *Adapter) ResolveTarget(_ context.Context, t policy.TargetRef) (runtime.
 	if !ok {
 		return runtime.Workload{}, fmt.Errorf("fake workload %q: %w", t.Name, runtime.ErrNotFound)
 	}
-	return runtime.Workload{Identity: a.identity(t), Ref: t, Revision: strconv.Itoa(w.revision)}, nil
+	return runtime.Workload{Identity: a.identity(t), Ref: t, Revision: strconv.Itoa(w.revision), Capabilities: w.caps}, nil
 }
 
 // Observe implements runtime.RuntimeAdapter.
@@ -163,6 +182,9 @@ func (a *Adapter) Reconcile(_ context.Context, desired state.DesiredState, obser
 	w, ok := a.workloads[observed.Workload.Workload]
 	if !ok {
 		return state.ReconcileResult{}, fmt.Errorf("fake workload %q: %w", observed.Workload.Workload, runtime.ErrNotFound)
+	}
+	if a.dryRun {
+		return state.ReconcileResult{DryRun: true, Message: "dry run"}, nil
 	}
 	for _, act := range actions {
 		on := act.Name == state.ActionEnableLogs || act.Name == state.ActionEnableMetrics || act.Name == state.ActionEnableTraces

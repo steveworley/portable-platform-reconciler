@@ -17,7 +17,8 @@ type StepInput struct {
 	Workload runtime.Workload
 	// Observed is the runtime state after the runtime reconcile (re-read if actions ran).
 	Observed state.ObservedState
-	// Capabilities are those of the runtime adapter.
+	// Capabilities are the effective capabilities of Workload (its own
+	// override if set, otherwise the adapter's).
 	Capabilities runtime.Capabilities
 }
 
@@ -43,6 +44,31 @@ type StepResult struct {
 type ReconcileStep interface {
 	Name() string
 	Reconcile(ctx context.Context, in StepInput) (StepResult, error)
+}
+
+// FinalizeInput identifies what a Finalizer must clean up after a policy is deleted.
+type FinalizeInput struct {
+	PolicyName string
+	// Workload is the identity recorded by the last successful target
+	// resolution of the policy.
+	Workload state.WorkloadIdentity
+	// Capabilities are the adapter-wide capabilities; the per-workload
+	// override is not retained once the policy is gone.
+	Capabilities runtime.Capabilities
+}
+
+// Finalizer is an optional interface for steps that own external resources
+// (e.g. alert rules) which must be removed when a policy is deleted. The engine
+// calls Finalize on every implementing step and drops the policy status only
+// when all of them succeed; on error the status is kept and the key retried.
+// Finalize must be idempotent.
+//
+// Limitation: the identity comes from the in-memory StatusStore, so a policy
+// deleted while the controller is down is never finalized. A production
+// version would persist ownership or run a backend-wide orphan sweep (see
+// alerting.Prune).
+type Finalizer interface {
+	Finalize(ctx context.Context, in FinalizeInput) error
 }
 
 // WithSteps appends reconcile steps, run in order after the runtime stage.

@@ -17,7 +17,7 @@ func init() {
 		runtime.WithTargetValidator(ValidateTarget))
 }
 
-func factory(cfg config.Config) (runtime.RuntimeAdapter, error) {
+func factory(cfg config.Config, logger *slog.Logger) (runtime.RuntimeAdapter, error) {
 	rc, err := restConfig(cfg.Kubernetes.Kubeconfig)
 	if err != nil {
 		return nil, err
@@ -27,7 +27,7 @@ func factory(cfg config.Config) (runtime.RuntimeAdapter, error) {
 		return nil, fmt.Errorf("create kubernetes client: %w", err)
 	}
 	return New(client,
-		WithLogger(slog.Default()),
+		WithLogger(logger),
 		WithApplyAnnotations(cfg.Kubernetes.ApplyAnnotations),
 	), nil
 }

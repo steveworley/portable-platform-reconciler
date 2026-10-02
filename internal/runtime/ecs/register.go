@@ -25,8 +25,7 @@ func init() {
 // factory builds the adapter from configuration. "simulated" mode uses a
 // seeded in-memory simulation with a working remediator; "aws" mode uses the
 // real ECS client (read-only) with a LogRemediator.
-func factory(cfg config.Config) (runtime.RuntimeAdapter, error) {
-	logger := slog.Default()
+func factory(cfg config.Config, logger *slog.Logger) (runtime.RuntimeAdapter, error) {
 	switch cfg.ECS.Mode {
 	case config.ECSModeSimulated, "":
 		sim := NewSeededSimulation()

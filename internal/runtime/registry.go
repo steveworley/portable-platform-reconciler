@@ -3,6 +3,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"strings"
@@ -19,7 +20,8 @@ type Env func(key string) string
 var OSEnv Env = os.Getenv
 
 // Factory builds an adapter from the controller configuration.
-type Factory func(cfg config.Config) (RuntimeAdapter, error)
+// logger may be nil.
+type Factory func(cfg config.Config, logger *slog.Logger) (RuntimeAdapter, error)
 
 // Detector reports whether the process appears to be running on its runtime.
 type Detector func(env Env) bool
@@ -125,15 +127,18 @@ func (r *Registry) Select(cfg config.RuntimeConfig, env Env) (RuntimeType, error
 	return "", fmt.Errorf("%w: %v", ErrAmbiguousRuntime, matches)
 }
 
-// New builds the adapter for t.
-func (r *Registry) New(t RuntimeType, cfg config.Config) (RuntimeAdapter, error) {
+// New builds the adapter for t. A nil logger discards logs.
+func (r *Registry) New(t RuntimeType, cfg config.Config, logger *slog.Logger) (RuntimeAdapter, error) {
 	r.mu.RLock()
 	reg, ok := r.entries[t]
 	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("%w %q", ErrUnknownRuntime, t)
 	}
-	return reg.factory(cfg)
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	return reg.factory(cfg, logger)
 }
 
 // ValidateTarget runs the runtime-specific validation for target.Runtime.
@@ -160,7 +165,9 @@ func Register(t RuntimeType, factory Factory, detector Detector, opts ...Registe
 func Select(cfg config.RuntimeConfig, env Env) (RuntimeType, error) { return Default.Select(cfg, env) }
 
 // New builds an adapter from the Default registry.
-func New(t RuntimeType, cfg config.Config) (RuntimeAdapter, error) { return Default.New(t, cfg) }
+func New(t RuntimeType, cfg config.Config, logger *slog.Logger) (RuntimeAdapter, error) {
+	return Default.New(t, cfg, logger)
+}
 
 // ValidateTarget validates a target against the Default registry.
 func ValidateTarget(target policy.TargetRef) error { return Default.ValidateTarget(target) }

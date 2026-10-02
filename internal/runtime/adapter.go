@@ -24,8 +24,20 @@ type Workload struct {
 	Ref      policy.TargetRef
 	// Revision is the task-definition revision or deployment generation.
 	Revision string
+	// Capabilities, when non-nil, overrides the adapter-wide capabilities for
+	// this workload (e.g. ECS Fargate vs EC2 launch type).
+	Capabilities *Capabilities
 	// Raw is an adapter-private handle. The engine must not inspect it.
 	Raw any
+}
+
+// EffectiveCapabilities returns the workload's own capabilities if it carries
+// them, otherwise def (normally the adapter-wide RuntimeAdapter.Capabilities).
+func (w Workload) EffectiveCapabilities(def Capabilities) Capabilities {
+	if w.Capabilities != nil {
+		return *w.Capabilities
+	}
+	return def
 }
 
 // RuntimeAdapter hides a runtime's APIs from the engine. Adapters read
@@ -33,7 +45,8 @@ type Workload struct {
 type RuntimeAdapter interface {
 	// Runtime returns the runtime this adapter serves.
 	Runtime() RuntimeType
-	// Capabilities reports what the runtime supports.
+	// Capabilities reports the runtime-wide default capabilities. A resolved
+	// Workload may override them; see Workload.EffectiveCapabilities.
 	Capabilities() Capabilities
 	// QueueKey returns the work-queue key for a target, e.g.
 	// "ECSService:<arn>" or "KubernetesDeployment:ns/name". Event sources must

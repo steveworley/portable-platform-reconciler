@@ -103,9 +103,9 @@ type Rule struct {
 	Scope    string
 	Resource string
 
-	// RequiresCapability is a runtime capability name (a runtime.Capabilities
-	// field, e.g. "HostTelemetry"). Empty means none.
-	RequiresCapability string
+	// RequiresCapability is a runtime capability the rule depends on, checked
+	// with runtime.Capabilities.Supports. Empty means none.
+	RequiresCapability state.Capability
 	// RequiresTelemetry lists telemetry signals of which at least one must be
 	// enabled in the policy (e.g. metrics or traces). Empty means none.
 	RequiresTelemetry []string
