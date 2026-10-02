@@ -1,0 +1,17 @@
+apiVersion: observability.platform.example/v1alpha1
+kind: ObservabilityPolicy
+metadata:
+  name: payments-api
+target:
+  runtime: kubernetes
+  namespace: payments
+  kind: Deployment
+  name: payments-api
+spec:
+  profile: standard
+  telemetry:
+    logs: {enabled: true}
+    metrics: {enabled: true}
+    traces: {enabled: true}
+  alerts:
+    profile: standard

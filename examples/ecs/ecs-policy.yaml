@@ -1,0 +1,18 @@
+apiVersion: observability.platform.example/v1alpha1
+kind: ObservabilityPolicy
+metadata:
+  name: payments-api
+target:
+  runtime: ecs
+  account: "123456789012"
+  region: ap-southeast-2
+  cluster: production
+  service: payments-api
+spec:
+  profile: standard
+  telemetry:
+    logs: {enabled: true}
+    metrics: {enabled: true}
+    traces: {enabled: true}
+  alerts:
+    profile: standard
